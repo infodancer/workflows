@@ -1,0 +1,6 @@
+# Custom labels on infodancer's self-hosted runners, so actionlint does not
+# flag them as unknown. "linux" is already a built-in known label.
+self-hosted-runner:
+  labels:
+    - ci
+    - docker-web

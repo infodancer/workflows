@@ -1,0 +1,40 @@
+name: Release
+
+# Auto-version. On merge to main, tag the next patch (vMAJOR.MINOR.PATCH+1) and
+# move the major pointer (vMAJOR) to it, so callers pinned to @v0 pick up updates
+# on their next run without any per-repo edit. Tag pushes do not re-trigger this
+# (it is gated on branch pushes), so there is no loop.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: [self-hosted, linux, ci]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Tag next patch and move the major pointer
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --tags --force --prune
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n1)
+          latest=${latest:-v0.0.0}
+          version=${latest#v}
+          major=${version%%.*}
+          rest=${version#*.}
+          minor=${rest%%.*}
+          patch=${rest##*.}
+          next="v${major}.${minor}.$((patch + 1))"
+          moving="v${major}"
+          echo "latest=${latest} -> next=${next}; moving ${moving} to it"
+          git tag -a "${next}" -m "${next}"
+          git tag -f -a "${moving}" -m "${moving} -> ${next}"
+          git push origin "${next}"
+          git push --force origin "${moving}"
