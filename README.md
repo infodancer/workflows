@@ -11,7 +11,7 @@ Callers span multiple GitHub orgs, so this repo is **public** -- a private repo'
 reusable workflows are only callable from within its own org. The workflows hold
 no secrets; callers pass the built-in `GITHUB_TOKEN` automatically.
 
-Pin callers to a release tag (`@v1`), not `@main`.
+Pin callers to an exact release tag (`@v0.1.0`), not `@main`.
 
 ## Workflows
 
@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   sweep:
-    uses: infodancer/workflows/.github/workflows/pr-preview-sweep.yml@v1
+    uses: infodancer/workflows/.github/workflows/pr-preview-sweep.yml@v0.1.0
     with:
       slug: sf
       image: ghcr.io/speculativefiction/sf
