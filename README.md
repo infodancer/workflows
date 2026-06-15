@@ -52,3 +52,45 @@ jobs:
 | `image` | yes | -- | full GHCR repo, e.g. `ghcr.io/owner/name`; per-PR tag is `pr-<N>` |
 | `postgres_container` | no | `postgres` | container to exec `psql` inside |
 | `runner` | no | `["self-hosted", "docker-web"]` | `runs-on` labels as a JSON array string |
+
+### `go-ci.yml`
+
+Go CI: `test` + `vet` + `fmt` + `lint` + `govulncheck`, each fanning out over a
+module matrix with `GOWORK=off`. Action versions are SHA-pinned here so every
+caller inherits one vetted set.
+
+The `test` job is the one with real per-repo variance (service containers,
+coverage, env). A reusable workflow can't take service containers as inputs, so
+a DB-backed repo sets `run_tests: false` and keeps its own `test.yml`, calling
+this for the static-analysis quartet only.
+
+```yaml
+# .github/workflows/ci.yml in the caller repo
+name: CI
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  ci:
+    uses: infodancer/workflows/.github/workflows/go-ci.yml@v0.2.0
+    # multi-module + a govulncheck toolchain pin, for example:
+    # with:
+    #   modules: '[".", "markdown", "mdedit"]'
+    #   govulncheck_go_version: "1.26.4"
+    #   run_tests: false   # repo has its own service-backed test.yml
+```
+
+| input | required | default | notes |
+|---|---|---|---|
+| `modules` | no | `["."]` | module dirs as a JSON array string |
+| `go_version` | no | `""` (use `go.mod`) | pin Go for test/vet/fmt/lint |
+| `govulncheck_go_version` | no | `""` (use `go.mod`) | pin Go for govulncheck only (toolchain-lag workaround) |
+| `golangci_version` | no | `v2.10.1` | golangci-lint version |
+| `run_tests` | no | `true` | set false for service-backed repos that keep their own test job |
+
+**Migration note:** moving a repo to this reusable renames its PR checks from
+`test` to `ci / test` (caller-job `/` reusable-job). If the repo has branch
+protection requiring the old names, update the required-check contexts in the
+same change.
