@@ -47,6 +47,15 @@ on:
         required: false
         type: boolean
         default: true
+      runner:
+        description: >-
+          runs-on labels, as a JSON array string. Defaults to the self-hosted CI
+          pool so callers do not consume GitHub-hosted minutes; override with
+          '["ubuntu-latest"]' for GitHub-hosted, or e.g. '["self-hosted","ci"]'
+          for a pool without the "linux" label.
+        required: false
+        type: string
+        default: '["self-hosted", "linux", "ci"]'
 
 permissions:
   contents: read
@@ -54,7 +63,7 @@ permissions:
 jobs:
   test:
     if: ${{ inputs.run_tests }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     env:
       GOWORK: "off"
     strategy:
@@ -71,7 +80,7 @@ jobs:
         run: go test -race -count=1 ./...
 
   vet:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     env:
       GOWORK: "off"
     strategy:
@@ -88,7 +97,7 @@ jobs:
         run: go vet ./...
 
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     env:
       GOWORK: "off"
     strategy:
@@ -111,7 +120,7 @@ jobs:
           fi
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     env:
       GOWORK: "off"
     strategy:
@@ -129,7 +138,7 @@ jobs:
           working-directory: ${{ matrix.module }}
 
   govulncheck:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     env:
       GOWORK: "off"
     strategy:
