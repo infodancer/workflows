@@ -1,0 +1,117 @@
+name: PR Preview Sweep (reusable)
+
+# Reconciliation safety net for per-PR preview artifacts, shared across every
+# site that uses the pr-preview.yml / pr-cleanup.yml pattern.
+#
+# pr-preview.yml creates an isolated database (<slug>_pr_<N>), container,
+# volume, and image per open PR; pr-cleanup.yml tears them down when the PR
+# closes. That event-driven cleanup is best-effort: a missed `closed` event, a
+# runner outage, or a swallowed failure (e.g. cleanup running where it can't
+# reach the database) leaves orphans that accumulate on the shared Postgres
+# server -- osg once piled up eleven orphaned databases that bloated the nightly
+# backup dump (homelab#76).
+#
+# This sweep reconciles: for every per-PR artifact still present, if the PR is
+# no longer open it drops the database, container, volume, and image. It is
+# conservative -- it only acts on PRs GitHub reports CLOSED or MERGED, and skips
+# anything whose state it cannot determine, so an open preview is never torn
+# down. A failed database drop is recorded (not swallowed) and reds the job
+# after the sweep finishes, so a real failure surfaces without stranding the
+# other orphans behind it.
+#
+# Scope is bounded by <slug>: it only ever enumerates and deletes objects named
+# <slug>_pr_<N> / <slug>-pr-<N> / <image>:pr-<N>, so other sites' artifacts on
+# the same Postgres instance are untouched.
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: >-
+          Artifact slug. Derives the database (<slug>_pr_<N>), container
+          (<slug>-pr-<N>), and volume (<slug>_pr_<N>_data) names.
+        required: true
+        type: string
+      image:
+        description: >-
+          Full GHCR image repository, e.g. ghcr.io/owner/name. The per-PR tag is
+          pr-<N>. Passed explicitly because it is not always derivable from the
+          slug (e.g. osg's image is ghcr.io/old-school-gamers/org).
+        required: true
+        type: string
+      postgres_container:
+        description: Name of the Postgres container to exec psql inside.
+        required: false
+        type: string
+        default: postgres
+      runner:
+        description: runs-on labels, as a JSON array string.
+        required: false
+        type: string
+        default: '["self-hosted", "docker-web"]'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sweep:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - name: Drop preview artifacts for closed PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SLUG: ${{ inputs.slug }}
+          IMAGE: ${{ inputs.image }}
+          PG: ${{ inputs.postgres_container }}
+        run: |
+          set -euo pipefail
+
+          # Candidate PR numbers from every artifact type so an orphan of any
+          # kind (db / container / volume / image) is caught. The trailing
+          # `|| true` keeps an empty result set (the common case -- no orphans)
+          # from tripping `set -e` via grep's no-match exit 1.
+          prs=$( {
+            docker exec "$PG" psql -U postgres -tAc \
+              "SELECT datname FROM pg_database WHERE datname ~ '^${SLUG}_pr_[0-9]+$'" \
+              | sed -E "s/^${SLUG}_pr_//"
+            docker ps -a --filter "name=${SLUG}-pr-" --format '{{.Names}}' \
+              | sed -E "s/^${SLUG}-pr-//"
+            docker volume ls --filter "name=${SLUG}_pr_" --format '{{.Name}}' \
+              | sed -nE "s/^${SLUG}_pr_([0-9]+)_data\$/\1/p"
+            docker images "$IMAGE" --format '{{.Tag}}' \
+              | sed -nE 's/^pr-([0-9]+)$/\1/p'
+          } | grep -E '^[0-9]+$' | sort -u ) || true
+
+          # Sweep every closed PR's orphans, but don't let one failed drop abort
+          # the run and strand the rest: record the failure and surface it at the
+          # end so a real problem still reds the job.
+          failed=0
+          for pr in $prs; do
+            state=$(gh pr view "$pr" --repo "$REPO" \
+                      --json state -q .state 2>/dev/null || echo "")
+            case "$state" in
+              OPEN)
+                echo "keep PR #$pr (open)"
+                ;;
+              CLOSED|MERGED)
+                echo "sweep PR #$pr ($state)"
+                docker rm -f "${SLUG}-pr-$pr" 2>/dev/null || true
+                docker volume rm "${SLUG}_pr_${pr}_data" 2>/dev/null || true
+                docker rmi "${IMAGE}:pr-$pr" 2>/dev/null || true
+                # Not silenced: a failed DB drop is recorded (not swallowed) so
+                # the job fails after sweeping everything it can.
+                if ! docker exec "$PG" psql -U postgres \
+                       -c "DROP DATABASE IF EXISTS \"${SLUG}_pr_$pr\" WITH (FORCE)"; then
+                  echo "::error::failed to drop database ${SLUG}_pr_$pr"
+                  failed=1
+                fi
+                ;;
+              *)
+                echo "skip PR #$pr (state unknown: '${state}') -- not dropping"
+                ;;
+            esac
+          done
+
+          exit "$failed"
