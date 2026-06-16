@@ -47,6 +47,16 @@ on:
         required: false
         type: boolean
         default: true
+      run_govulncheck:
+        description: >-
+          Run the `govulncheck ./...` (source mode) job. Set false for repos
+          that must scan in binary mode -- e.g. those whose tests pull
+          testcontainers/moby transitively, where source mode surfaces
+          server-side CVEs unreachable from the shipped binary; they keep their
+          own govulncheck workflow.
+        required: false
+        type: boolean
+        default: true
       runner:
         description: >-
           runs-on labels, as a JSON array string. Defaults to the self-hosted CI
@@ -138,6 +148,7 @@ jobs:
           working-directory: ${{ matrix.module }}
 
   govulncheck:
+    if: ${{ inputs.run_govulncheck }}
     runs-on: ${{ fromJSON(inputs.runner) }}
     env:
       GOWORK: "off"

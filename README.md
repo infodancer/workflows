@@ -89,6 +89,7 @@ jobs:
 | `govulncheck_go_version` | no | `""` (use `go.mod`) | pin Go for govulncheck only (toolchain-lag workaround) |
 | `golangci_version` | no | `v2.10.1` | golangci-lint version |
 | `run_tests` | no | `true` | set false for service-backed repos that keep their own test job |
+| `run_govulncheck` | no | `true` | set false for repos that must scan in binary mode (e.g. testcontainers/moby) and keep their own govulncheck job |
 
 **Migration note:** moving a repo to this reusable renames its PR checks from
 `test` to `ci / test` (caller-job `/` reusable-job). If the repo has branch
