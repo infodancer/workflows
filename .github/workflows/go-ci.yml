@@ -53,10 +53,22 @@ on:
           that must scan in binary mode -- e.g. those whose tests pull
           testcontainers/moby transitively, where source mode surfaces
           server-side CVEs unreachable from the shipped binary; they keep their
-          own govulncheck workflow.
+          own govulncheck workflow. Prefer govulncheck_allow (below) when you
+          still want those findings reported, just not gating.
         required: false
         type: boolean
         default: true
+      govulncheck_allow:
+        description: >-
+          OSV IDs (JSON array string, e.g. '["GO-2026-5746"]') to report but not
+          gate on. Allow-listed findings still print and are annotated as
+          warnings for visibility; they just don't fail the job. Use for vulns
+          with no available fix, or reachable only through test-support code
+          (e.g. testcontainers/moby). Everything else still gates, so a fixable
+          production vuln is never silently ignored.
+        required: false
+        type: string
+        default: '[]'
       runner:
         description: >-
           runs-on labels, as a JSON array string. Defaults to the self-hosted CI
@@ -165,4 +177,28 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Run govulncheck (${{ matrix.module }})
         working-directory: ${{ matrix.module }}
-        run: govulncheck ./...
+        env:
+          GOVULN_ALLOW: ${{ inputs.govulncheck_allow }}
+        run: |
+          set -uo pipefail
+          # Human-readable pass for the job log (visibility); never gates on its
+          # own -- the JSON pass below decides pass/fail.
+          govulncheck ./... || true
+          # Machine-readable pass drives the gate.
+          govulncheck -format json ./... > govulncheck.json || true
+          # OSV IDs whose vulnerable symbols are actually called (govulncheck's
+          # own exit-3 criterion): a finding with a function at trace[0].
+          called=$(jq -r 'select(has("finding")) | .finding
+            | select(.trace[0].function != null) | .osv' govulncheck.json \
+            | sort -u)
+          allow=$(printf '%s' "${GOVULN_ALLOW:-[]}" | jq -r '.[]')
+          status=0
+          for id in $called; do
+            if printf '%s\n' "$allow" | grep -qxF "$id"; then
+              echo "::warning::${id} is reachable but allow-listed (reported, not gated)"
+            else
+              echo "::error::${id} is reachable and not allow-listed"
+              status=1
+            fi
+          done
+          exit $status
