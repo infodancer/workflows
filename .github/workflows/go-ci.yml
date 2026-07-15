@@ -112,6 +112,12 @@ jobs:
         with:
           go-version: ${{ inputs.go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
+          # Install the newest patch matching the go.mod version rather than
+          # reusing whatever go1.MINOR.x a runner happens to have cached. Under
+          # GOTOOLCHAIN=local a stale cache (e.g. 1.25.11 when go.mod requires
+          # 1.25.12 for a stdlib CVE) makes the build refuse to run, so a
+          # security patch bump silently fails on some runners and not others.
+          check-latest: true
       - name: Test (${{ matrix.module }})
         working-directory: ${{ matrix.module }}
         run: go test -race -count=1 ./...
@@ -138,6 +144,12 @@ jobs:
         with:
           go-version: ${{ inputs.go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
+          # Install the newest patch matching the go.mod version rather than
+          # reusing whatever go1.MINOR.x a runner happens to have cached. Under
+          # GOTOOLCHAIN=local a stale cache (e.g. 1.25.11 when go.mod requires
+          # 1.25.12 for a stdlib CVE) makes the build refuse to run, so a
+          # security patch bump silently fails on some runners and not others.
+          check-latest: true
       - name: Vet (${{ matrix.module }})
         working-directory: ${{ matrix.module }}
         run: go vet ./...
@@ -155,6 +167,12 @@ jobs:
         with:
           go-version: ${{ inputs.go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
+          # Install the newest patch matching the go.mod version rather than
+          # reusing whatever go1.MINOR.x a runner happens to have cached. Under
+          # GOTOOLCHAIN=local a stale cache (e.g. 1.25.11 when go.mod requires
+          # 1.25.12 for a stdlib CVE) makes the build refuse to run, so a
+          # security patch bump silently fails on some runners and not others.
+          check-latest: true
       - name: Check formatting (${{ matrix.module }})
         working-directory: ${{ matrix.module }}
         run: |
@@ -178,6 +196,12 @@ jobs:
         with:
           go-version: ${{ inputs.go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
+          # Install the newest patch matching the go.mod version rather than
+          # reusing whatever go1.MINOR.x a runner happens to have cached. Under
+          # GOTOOLCHAIN=local a stale cache (e.g. 1.25.11 when go.mod requires
+          # 1.25.12 for a stdlib CVE) makes the build refuse to run, so a
+          # security patch bump silently fails on some runners and not others.
+          check-latest: true
       - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         with:
           version: ${{ inputs.golangci_version }}
@@ -205,6 +229,10 @@ jobs:
         with:
           go-version: ${{ inputs.govulncheck_go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
+          # See the build jobs above: install the exact newest patch so a
+          # runner's stale toolchain cache can't scan against an unpatched
+          # stdlib.
+          check-latest: true
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Run govulncheck (${{ matrix.module }})
