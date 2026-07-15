@@ -182,6 +182,14 @@ jobs:
         with:
           version: ${{ inputs.golangci_version }}
           working-directory: ${{ matrix.module }}
+          # The action's default `verify: true` fetches the config JSONSchema
+          # from golangci-lint.run on every run, so a slow response from that
+          # host fails the lint job -- a red X that reads like a lint finding
+          # on a PR that changed no Go code. Validating a checked-in config
+          # file is a developer-time concern; run `golangci-lint config verify`
+          # locally when editing .golangci.yml. A genuinely broken config still
+          # fails the lint run itself.
+          verify: false
 
   govulncheck:
     if: ${{ inputs.run_govulncheck }}
