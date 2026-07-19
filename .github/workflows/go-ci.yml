@@ -203,6 +203,18 @@ jobs:
           # security patch bump silently fails on some runners and not others.
           check-latest: true
       - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+        env:
+          # Per-job analysis cache (step-level env: the runner context is not
+          # available in job env). golangci-lint's default cache dir lives
+          # under the runner user's home, shared by every concurrent lint job
+          # on a self-hosted host. Under concurrent access staticcheck can
+          # load damaged per-package facts -- observed 2026-07-19 in memstore
+          # as nondeterministic SA5011 false positives ("(*testing.common)
+          # .Fatal does not return" fact lost) that came and went across runs
+          # on identical code and identical pinned tool versions. runner.temp
+          # is unique per job and wiped after it, so each run pays a cold
+          # cache (~30-60s) and shares nothing.
+          GOLANGCI_LINT_CACHE: ${{ runner.temp }}/golangci-lint-cache
         with:
           version: ${{ inputs.golangci_version }}
           working-directory: ${{ matrix.module }}
@@ -214,6 +226,13 @@ jobs:
           # locally when editing .golangci.yml. A genuinely broken config still
           # fails the lint run itself.
           verify: false
+          # Don't restore/save the analysis cache through the actions cache
+          # service either -- a restored archive would land in the per-job
+          # GOLANGCI_LINT_CACHE dir above and defeat its isolation, and
+          # concurrent jobs racing on the same cache key is the suspected
+          # corruption vector in the first place. Every lint run is cold on
+          # purpose.
+          skip-cache: true
 
   govulncheck:
     if: ${{ inputs.run_govulncheck }}
