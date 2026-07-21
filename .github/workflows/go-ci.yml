@@ -176,7 +176,12 @@ jobs:
       - name: Check formatting (${{ matrix.module }})
         working-directory: ${{ matrix.module }}
         run: |
-          unformatted=$(gofmt -l .)
+          # gofmt is a plain filesystem walk with no concept of Go module
+          # boundaries or vendoring -- unlike go vet/build/golangci-lint,
+          # which all skip vendor/ automatically. A vendored repo would
+          # otherwise fail here on third-party code's own formatting, not
+          # anything this repo authored.
+          unformatted=$(find . -name '*.go' -not -path '*/vendor/*' -print0 | xargs -0 gofmt -l)
           if [ -n "$unformatted" ]; then
             echo "::error::Unformatted files:"
             echo "$unformatted"
