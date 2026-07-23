@@ -236,6 +236,14 @@ jobs:
         with:
           version: ${{ inputs.golangci_version }}
           working-directory: ${{ matrix.module }}
+          # Self-hosted runners pack several matrix jobs onto one host, and
+          # golangci-lint's run-lock lives in a shared temp path, not the
+          # per-job GOLANGCI_LINT_CACHE below. Without this a concurrent lint
+          # job aborts with "parallel golangci-lint is running" -- seen on a
+          # 14-module caller (infodancer/web) where several lint jobs land on
+          # the same runner host at once. The per-job cache already isolates
+          # analysis state, so letting the runs proceed in parallel is safe.
+          args: --allow-parallel-runners
           # The action's default `verify: true` fetches the config JSONSchema
           # from golangci-lint.run on every run, so a slow response from that
           # host fails the lint job -- a red X that reads like a lint finding
