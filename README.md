@@ -11,7 +11,17 @@ Callers span multiple GitHub orgs, so this repo is **public** -- a private repo'
 reusable workflows are only callable from within its own org. The workflows hold
 no secrets; callers pass the built-in `GITHUB_TOKEN` automatically.
 
-Pin callers to an exact release tag (`@v0.1.0`), not `@main`.
+Pin callers to the moving major tag (`@v0`), not an exact patch tag and not
+`@main`. The premise of this repo is "fix a bug once, every caller picks it up on
+its next run" -- pinning `@v0.2.0` defeats that, turning every workflow change
+into a manual bump across every caller repo. `v0` is re-pointed on each release
+and kept backward-compatible for callers; a genuinely breaking input change gets
+a `v1` rather than breaking `v0`. Same model as `actions/checkout@v6`.
+
+The tradeoff is deliberate: a change to `v0` reaches every caller on their next
+run, so anything landing here must be compatible and tested before the tag moves.
+Exact tags (`@v0.2.0`) stay available for pinning a caller that needs to sit out
+a change, and `@main` is never a valid pin -- it picks up unreleased work.
 
 ## Workflows
 
@@ -39,7 +49,7 @@ permissions:
 
 jobs:
   sweep:
-    uses: infodancer/workflows/.github/workflows/pr-preview-sweep.yml@v0.1.0
+    uses: infodancer/workflows/.github/workflows/pr-preview-sweep.yml@v0
     with:
       slug: sf
       image: ghcr.io/speculativefiction/sf
@@ -74,7 +84,7 @@ on:
 
 jobs:
   ci:
-    uses: infodancer/workflows/.github/workflows/go-ci.yml@v0.2.0
+    uses: infodancer/workflows/.github/workflows/go-ci.yml@v0
     # multi-module + a govulncheck toolchain pin, for example:
     # with:
     #   modules: '[".", "markdown", "mdedit"]'
