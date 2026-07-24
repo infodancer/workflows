@@ -95,11 +95,13 @@ jobs:
 | input | required | default | notes |
 |---|---|---|---|
 | `modules` | no | `["."]` | module dirs as a JSON array string |
-| `go_version` | no | `""` (use `go.mod`) | pin Go for test/vet/fmt/lint |
-| `govulncheck_go_version` | no | `""` (use `go.mod`) | pin Go for govulncheck only (toolchain-lag workaround) |
+| `go_version` | no | `stable` | Go for test/vet/fmt/lint; `""` falls back to each module's `go.mod`, or set an exact version to pin |
+| `govulncheck_go_version` | no | `stable` | Go for govulncheck only; scan with the toolchain you **ship** -- a repo pinning an older `FROM golang:` must match it here, or real stdlib vulns stay hidden |
 | `golangci_version` | no | `v2.10.1` | golangci-lint version |
 | `run_tests` | no | `true` | set false for service-backed repos that keep their own test job |
 | `run_govulncheck` | no | `true` | set false for repos that must scan in binary mode (e.g. testcontainers/moby) and keep their own govulncheck job |
+| `govulncheck_allow` | no | `[]` | OSV IDs (JSON array string) to report but not gate on; findings still print as warnings |
+| `runner` | no | `["self-hosted", "linux", "ci"]` | `runs-on` labels as a JSON array string; override to `["ubuntu-latest"]` for GitHub-hosted |
 
 **Migration note:** moving a repo to this reusable renames its PR checks from
 `test` to `ci / test` (caller-job `/` reusable-job). If the repo has branch
