@@ -140,14 +140,56 @@ jobs:
         working-directory: ${{ matrix.module }}
         run: go test -race -count=1 ./...
 
-      # Reap any testcontainers a killed, panicked, or timed-out run left
-      # behind. With Ryuk disabled nothing else cleans these up on the
-      # persistent runner, so do it deterministically by testcontainers' own
-      # label. Runs even when the test step fails; -r keeps it a no-op when the
-      # normal path already terminated everything (the common case).
-      - name: Reap leftover testcontainers
+      # Reap testcontainers a killed, panicked, or timed-out run left behind.
+      # With Ryuk disabled nothing else cleans these up on a persistent runner.
+      #
+      # ONLY containers older than REAP_MIN_AGE are removed, and that bound is
+      # the whole point -- do not "simplify" this back to removing everything
+      # carrying the testcontainers label.
+      #
+      # This step used to do exactly that, on the stated assumption of "one job
+      # per runner, isolated dockerd, so the label filter only sees this job's
+      # containers". That assumption is false wherever several runners share a
+      # host: infodancer's CI LXCs run 8 runner accounts against a single
+      # /var/run/docker.sock. A blanket `docker rm -f` therefore killed the
+      # live Postgres containers of the 7 other jobs still running, and the
+      # victim was whichever job was unlucky -- surfacing as three unrelated
+      # looking failures depending on when the reap landed:
+      #
+      #   wait until ready: context deadline exceeded   (killed during startup)
+      #   port "5432/tcp" not found                     (killed before port lookup)
+      #   unexpected EOF / connection reset by peer     (killed mid-test)
+      #
+      # Diagnosed against instrumented runs: CPU, IO and memory pressure were
+      # all flat at the moment of failure, which is what ruled out resource
+      # exhaustion and pointed here (infodancer/workflows#18).
+      #
+      # Age is the scoping mechanism because the precise one is not reachable
+      # from a shell step: testcontainers labels each container with
+      # org.testcontainers.sessionId, but that value is a sha256 of the
+      # `go test` parent pid and its process start time, so only the test
+      # process itself can compute it. An age bound gets the property that
+      # matters -- a container younger than the cutoff may belong to a live
+      # job, so it is never touched -- without needing to identify ownership.
+      # Jobs here finish in well under a minute, so an hour is a wide margin;
+      # anything genuinely leaked is collected by a later job's reap.
+      #
+      # `docker ps` has no `until` filter (that is prune-only), hence the
+      # explicit per-container timestamp comparison.
+      - name: Reap stale testcontainers
         if: always()
-        run: docker ps -aq --filter label=org.testcontainers=true | xargs -r docker rm -f
+        env:
+          REAP_MIN_AGE: 1 hour ago
+        run: |
+          cutoff=$(date -u -d "$REAP_MIN_AGE" +%s)
+          for id in $(docker ps -aq --filter label=org.testcontainers=true); do
+            created=$(docker inspect -f '{{.Created}}' "$id" 2>/dev/null) || continue
+            ts=$(date -u -d "$created" +%s 2>/dev/null) || continue
+            if [ "$ts" -lt "$cutoff" ]; then
+              echo "reaping stale container $id (created $created)"
+              docker rm -f "$id" || true
+            fi
+          done
 
   vet:
     runs-on: ${{ fromJSON(inputs.runner) }}
