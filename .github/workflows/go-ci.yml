@@ -47,7 +47,7 @@ on:
         description: golangci-lint version.
         required: false
         type: string
-        default: v2.10.1
+        default: v2.13.1
       run_tests:
         description: >-
           Run the stateless `go test -race -count=1 ./...` job. Set false for
