@@ -78,6 +78,16 @@ on:
         required: false
         type: string
         default: '[]'
+      allow_local_replace:
+        description: >-
+          Module paths (JSON array string, e.g. '["github.com/acme/thing"]')
+          permitted to keep a filesystem replace pointing outside the repo.
+          Use only for a module being actively co-developed, and remove the
+          entry when it is tagged -- an entry here disables the protection for
+          that dependency entirely.
+        required: false
+        type: string
+        default: '[]'
       runner:
         description: >-
           runs-on labels, as a JSON array string. Defaults to the self-hosted CI
@@ -105,12 +115,19 @@ jobs:
       # same-named container, and the loser dies on a Docker 409 conflict.
       # DB-backed tests terminate their own containers on the normal path, so
       # Ryuk only mattered for a killed/timed-out run leaking a container on the
-      # persistent runner -- the always() reap step below covers that
-      # deterministically, by label, with no create-race. Each matrix module is
-      # its own job on its own LXC runner (isolated dockerd, one job per
-      # runner), so the label filter only sees this job's containers. Same fix
-      # as infodancer/web#90 / old-school-gamers/osg#420. Harmless for repos
-      # whose tests use no containers.
+      # persistent runner -- the reap step below covers that, bounded by
+      # container age.
+      #
+      # An earlier version of this comment claimed each matrix module gets "its
+      # own LXC runner (isolated dockerd, one job per runner), so the label
+      # filter only sees this job's containers". That is false where several
+      # runners share a host -- the CI LXCs run 6-8 runner accounts against one
+      # /var/run/docker.sock -- and acting on it is what made the reap step
+      # delete other jobs' live containers (#18, fixed in #19). Do not
+      # reintroduce that assumption anywhere in this file.
+      #
+      # Same Ryuk fix as infodancer/web#90 / old-school-gamers/osg#420.
+      # Harmless for repos whose tests use no containers.
       TESTCONTAINERS_RYUK_DISABLED: "true"
     strategy:
       matrix:
@@ -380,4 +397,79 @@ jobs:
               status=1
             fi
           done
+          exit $status
+
+  # A filesystem `replace` pointing outside the repo makes the build depend on
+  # what happens to be in a sibling directory on one developer's disk. Nothing
+  # fails when it drifts, which is the problem: the module graph names a version
+  # nobody is actually compiling.
+  #
+  # Vendoring hides it completely. CI and the container image build from
+  # vendor/ and never resolve the replace target at all, so the vendored copy
+  # and the named version can diverge indefinitely with every check green.
+  # old-school-gamers/osg carried `smoke => ../../../infodancer/smoke` pinned at
+  # v0.0.0 while the vendored tree sat nine commits past the v0.1.0 tag -- among
+  # them a go1.26.5 bump for CVE-2026-42505. A security fix was in the binary
+  # and invisible to anything reading go.mod.
+  #
+  # Replaces pointing INSIDE the repo are fine and deliberately allowed: that is
+  # how the multi-module repos develop sibling modules against each other
+  # (infodancer/web's `web/blog` -> `../media`). Only targets that escape the
+  # repository root are rejected, so monorepo layouts are unaffected.
+  #
+  # Module-to-module replaces with a version (`replace a => b v1.2.3`) are not
+  # filesystem paths and are left alone.
+  replace-check:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    env:
+      GOWORK: "off"
+      ALLOW_LOCAL_REPLACE: ${{ inputs.allow_local_replace }}
+    strategy:
+      matrix:
+        module: ${{ fromJSON(inputs.modules) }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: ${{ inputs.go_version }}
+          go-version-file: ${{ matrix.module }}/go.mod
+          check-latest: true
+          cache: false
+      - name: No external filesystem replace (${{ matrix.module }})
+        working-directory: ${{ matrix.module }}
+        run: |
+          set -euo pipefail
+          root=$(git rev-parse --show-toplevel)
+          moddir=$(pwd)
+          status=0
+
+          # `go mod edit -json` rather than grepping go.mod: it survives
+          # comments, block vs single-line syntax, and quoting.
+          replaces=$(go mod edit -json | jq -r '
+            (.Replace // [])[]
+            | select(.New.Path | test("^(\\./|\\.\\./|/)"))
+            | "\(.Old.Path)\t\(.New.Path)"')
+
+          allow=$(printf '%s' "${ALLOW_LOCAL_REPLACE:-[]}" | jq -r '.[]' || true)
+
+          while IFS=$'\t' read -r old new; do
+            [ -n "$old" ] || continue
+            target=$(realpath -m "$moddir/$new")
+            case "$target" in
+              "$root"|"$root"/*)
+                continue
+                ;;
+            esac
+            if printf '%s\n' "$allow" | grep -qxF "$old"; then
+              echo "::warning::${old} => ${new} escapes the repo but is allow-listed; remove the entry once it is tagged"
+              continue
+            fi
+            echo "::error::${old} => ${new} resolves to ${target}, outside this repository."
+            echo "::error::Tag the dependency and require the version instead. A local replace builds only on a machine with that checkout, and vendoring hides the drift."
+            status=1
+          done <<< "$replaces"
+
+          if [ "$status" -eq 0 ]; then
+            echo "replace check passed"
+          fi
           exit $status
