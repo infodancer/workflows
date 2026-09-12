@@ -478,6 +478,17 @@ jobs:
           # locally when editing .golangci.yml. A genuinely broken config still
           # fails the lint run itself.
           verify: false
+          # golangci-lint refuses to start while another instance is running on
+          # the host ("parallel golangci-lint is running") -- a guard keyed on
+          # the host, not on GOLANGCI_LINT_CACHE, so the per-job cache dir above
+          # does not avoid it. A caller with more than one module in `modules`
+          # runs exactly that: two lint jobs, same self-hosted host, same
+          # moment. Observed 2026-09-12 on infodancer/logging with modules
+          # ["." , "httplog"], where both lint jobs failed within a second of
+          # each other and failed again on rerun. The flag is upstream's own
+          # remedy, and the isolation that made the guard matter -- a shared
+          # analysis cache -- is already handled above.
+          args: --allow-parallel-runners
           # Don't restore/save the analysis cache through the actions cache
           # service either -- a restored archive would land in the per-job
           # GOLANGCI_LINT_CACHE dir above and defeat its isolation, and
