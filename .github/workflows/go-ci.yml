@@ -88,6 +88,23 @@ on:
         required: false
         type: string
         default: '[]'
+      check_go_consistency:
+        description: >-
+          Fail when the repo's go.mod files do not all declare the same go
+          directive. Off by default: a repo whose modules legitimately differ,
+          or one caught mid-bump, would otherwise go red on a change it never
+          made. Turn it on where the version moves in lockstep.
+        required: false
+        type: boolean
+        default: false
+      go_version_doc:
+        description: >-
+          Path to a doc that must name the version the modules declare, e.g.
+          "CONVENTIONS.md". Only consulted when check_go_consistency is true;
+          empty checks the modules against each other and no further.
+        required: false
+        type: string
+        default: ""
       runner:
         description: >-
           runs-on labels, as a JSON array string. Defaults to the self-hosted CI
@@ -627,3 +644,83 @@ jobs:
             echo "replace check passed"
           fi
           exit $status
+
+  # One Go version across the repo, and docs that say the same number.
+  #
+  # Two failures this catches, both seen in infodancer/web:
+  #
+  #   - A module left behind by a suite-wide bump. media/cmd/media-import sat
+  #     at go 1.26.5 while the parent it resolves through `replace ../..`
+  #     required 1.26.6. Go honours the DECLARING module's directive, so every
+  #     command in that directory died at load time -- build, test, vet and
+  #     govulncheck alike -- and the module was not in the matrix, so nothing
+  #     reported it. It was the only module disagreeing with its siblings,
+  #     which is exactly what this job looks for (infodancer/web#111).
+  #
+  #   - Docs drifting from the code. CONVENTIONS.md named a version the
+  #     modules had moved past three separate times (infodancer/web#86, #111),
+  #     because correcting the number is a manual step nothing enforces.
+  #
+  # Needs no Go toolchain: it reads go.mod as text, so there is no setup-go
+  # here and no dependency on resolve-go.
+  go-consistency:
+    if: ${{ inputs.check_go_consistency }}
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: One Go version across every go.mod
+        env:
+          VERSION_DOC: ${{ inputs.go_version_doc }}
+        run: |
+          set -euo pipefail
+
+          # Tracked files only: an untracked scratch checkout (an agent
+          # worktree, a stray vendored tree) must not be able to fail the
+          # build. testdata and vendor are excluded -- those go.mod files are
+          # fixtures and third-party code, pinned to whatever they need.
+          mods=$(git ls-files '*go.mod' \
+            | grep -v -e '^testdata/' -e '/testdata/' -e '^vendor/' -e '/vendor/' || true)
+
+          if [ -z "$mods" ]; then
+            echo "no go.mod files tracked; nothing to check"
+            exit 0
+          fi
+
+          versions=$(printf '%s\n' "$mods" | xargs grep -h '^go ' | awk '{print $2}' | sort -u)
+
+          if [ -z "$versions" ]; then
+            echo "::error::Found go.mod files but none declares a go directive."
+            exit 1
+          fi
+
+          if [ "$(printf '%s\n' "$versions" | wc -l)" -ne 1 ]; then
+            echo "::error::Modules disagree on the Go version; the go directive must match across the repo."
+            while read -r m; do
+              printf '  %-52s %s\n' "$m" "$(grep -m1 '^go ' "$m" | awk '{print $2}')"
+            done <<< "$mods"
+            echo "::error::A module left behind by a bump stops building against any sibling that requires the newer version."
+            exit 1
+          fi
+
+          echo "all modules declare go ${versions}"
+
+          [ -n "${VERSION_DOC:-}" ] || exit 0
+
+          if [ ! -f "$VERSION_DOC" ]; then
+            echo "::error::go_version_doc is set to '${VERSION_DOC}', which does not exist in this repo."
+            exit 1
+          fi
+
+          # Substring match, not an exact-equality check on every version-like
+          # string in the file: docs legitimately cite older versions in
+          # changelogs and history, and failing on those would make the gate
+          # something people switch off. The claim being enforced is that the
+          # current version appears at all.
+          if ! grep -qF "$versions" "$VERSION_DOC"; then
+            echo "::error file=${VERSION_DOC}::${VERSION_DOC} never mentions go ${versions}, which every go.mod declares. Update it in the same change as the bump."
+            echo "Version-like strings currently in ${VERSION_DOC}:"
+            grep -nE '\b1\.[0-9]+(\.[0-9]+)?\b' "$VERSION_DOC" | head -5 || true
+            exit 1
+          fi
+
+          echo "${VERSION_DOC} mentions go ${versions}"

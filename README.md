@@ -112,7 +112,34 @@ since modules may name different versions in their own `go.mod`.
 | `run_tests` | no | `true` | set false for service-backed repos that keep their own test job |
 | `run_govulncheck` | no | `true` | set false for repos that must scan in binary mode (e.g. testcontainers/moby) and keep their own govulncheck job |
 | `govulncheck_allow` | no | `[]` | OSV IDs (JSON array string) to report but not gate on; findings still print as warnings |
+| `allow_local_replace` | no | `[]` | module paths (JSON array string) allowed to keep a filesystem `replace` pointing outside the repo; remove an entry once the dependency is tagged |
+| `check_go_consistency` | no | `false` | fail when the repo's `go.mod` files disagree on the `go` directive (see below) |
+| `go_version_doc` | no | `""` | path to a doc that must name the version the modules declare, e.g. `CONVENTIONS.md`; only consulted when `check_go_consistency` is true |
 | `runner` | no | `["self-hosted", "linux", "ci"]` | `runs-on` labels as a JSON array string; override to `["ubuntu-latest"]` for GitHub-hosted |
+
+**Go version consistency (`check_go_consistency`)** asserts that every tracked
+`go.mod` declares the same `go` directive, and -- with `go_version_doc` -- that
+the named doc mentions it. It needs no Go toolchain and adds one short job.
+
+It is **off by default** because turning it on is a judgement about the repo:
+callers whose modules legitimately sit on different versions would go red on a
+change they never made. Enable it where the version moves in lockstep:
+
+```yaml
+    with:
+      check_go_consistency: true
+      go_version_doc: CONVENTIONS.md
+```
+
+Two real failures motivated it, both in `infodancer/web`. A nested module missed
+by a suite-wide bump kept `go 1.26.5` while the parent it resolves through
+`replace ../..` required `1.26.6`; since Go honours the *declaring* module's
+directive, every command in that directory died at load time, and because the
+module was not in the matrix nothing reported it for weeks. Separately,
+`CONVENTIONS.md` drifted from the code three times, because correcting the
+number was a manual step nothing enforced. The doc half is a substring match
+rather than an exact check, so a changelog citing older versions still passes --
+the claim enforced is that the current version appears at all.
 
 **Migration note:** moving a repo to this reusable renames its PR checks from
 `test` to `ci / test` (caller-job `/` reusable-job). If the repo has branch
