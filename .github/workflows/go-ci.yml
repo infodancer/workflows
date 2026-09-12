@@ -102,7 +102,68 @@ permissions:
   contents: read
 
 jobs:
+  # Resolve the toolchain ONCE per run rather than once per matrix job.
+  #
+  # check-latest makes setup-go consult GitHub's version manifest before it
+  # looks in the runner's tool cache. That is the only network dependency in an
+  # otherwise local step, and a wide matrix multiplies it: infodancer/web fans
+  # out to ~90 jobs that all resolve the same "stable". Under that load the
+  # call has been seen to stall for minutes and then return WITHOUT installing
+  # Go -- no "Found in cache", no "Added go to the path", no error, exit status
+  # 0 -- after which the job keeps going until the first go/gofmt call dies
+  # with exit 127 several steps later. Observed 2026-09-12 on infodancer/web
+  # across three different runners, while a job on one of those same runners
+  # succeeded three minutes earlier.
+  #
+  # Resolving here and passing the exact patch down keeps what #11 bought
+  # (never building on a stale cached patch under GOTOOLCHAIN=local) while
+  # turning every other job's setup-go into a pure tool-cache lookup.
+  #
+  # When a caller clears go_version to follow each module's own go.mod there is
+  # nothing to resolve centrally -- modules may legitimately name different
+  # versions -- so the output stays empty and those jobs keep check-latest for
+  # themselves. That is the one path that still pays per job.
+  resolve-go:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    outputs:
+      go_version: ${{ steps.build.outputs.version }}
+      govulncheck_go_version: ${{ steps.vuln.outputs.version }}
+    steps:
+      - if: ${{ inputs.go_version != '' }}
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: ${{ inputs.go_version }}
+          check-latest: true
+          cache: false
+      - id: build
+        if: ${{ inputs.go_version != '' }}
+        run: |
+          set -euo pipefail
+          command -v go >/dev/null || {
+            echo "::error::setup-go reported success but installed no Go (go_version=${{ inputs.go_version }}). This is the silent-failure mode this job exists to catch."
+            exit 1
+          }
+          go version
+          echo "version=$(go env GOVERSION | sed 's/^go//')" >> "$GITHUB_OUTPUT"
+      - if: ${{ inputs.govulncheck_go_version != '' }}
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: ${{ inputs.govulncheck_go_version }}
+          check-latest: true
+          cache: false
+      - id: vuln
+        if: ${{ inputs.govulncheck_go_version != '' }}
+        run: |
+          set -euo pipefail
+          command -v go >/dev/null || {
+            echo "::error::setup-go reported success but installed no Go (govulncheck_go_version=${{ inputs.govulncheck_go_version }})."
+            exit 1
+          }
+          go version
+          echo "version=$(go env GOVERSION | sed 's/^go//')" >> "$GITHUB_OUTPUT"
+
   test:
+    needs: resolve-go
     if: ${{ inputs.run_tests }}
     runs-on: ${{ fromJSON(inputs.runner) }}
     env:
@@ -136,15 +197,20 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: ${{ inputs.go_version }}
+          # The exact patch resolved once by resolve-go. Empty when the caller
+          # cleared go_version, and then go-version-file below applies per
+          # module -- the only path that still resolves per job.
+          go-version: ${{ needs.resolve-go.outputs.go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
           # go-version wins when both are set, so go-version-file only applies
-          # when a caller clears go_version to follow its own go.mod. Keep
-          # check-latest for that path: it installs the newest patch rather than
-          # whatever go1.MINOR.x a runner has cached, and under GOTOOLCHAIN=local
-          # a stale cache makes the build refuse to run, so a security patch bump
-          # would otherwise fail on some runners and not others.
-          check-latest: true
+          # when a caller clears go_version to follow its own go.mod. That path
+          # keeps check-latest, for the reason #11 added it: it installs the
+          # newest patch rather than whatever go1.MINOR.x a runner has cached,
+          # and under GOTOOLCHAIN=local a stale cache makes the build refuse to
+          # run, so a security patch bump would otherwise fail on some runners
+          # and not others. With go_version set, resolve-go already did that
+          # lookup once and this is a tool-cache hit with no network call.
+          check-latest: ${{ inputs.go_version == '' }}
           # Persistent self-hosted runner: Go's own module and build caches
           # already persist on disk between jobs, so setup-go's tar-based cache
           # is redundant -- its restore collides with the populated dirs ("tar:
@@ -153,6 +219,18 @@ jobs:
           # Go's on-disk caches are concurrency-safe, so only the redundant
           # actions layer is disabled.
           cache: false
+      # setup-go can report success having installed nothing (see resolve-go).
+      # Without this the job runs on and dies later in an unrelated step with a
+      # bare "gofmt: No such file or directory" and exit 127, which reads as a
+      # repo problem rather than a toolchain one. Fail here instead, loudly.
+      - name: Verify the Go toolchain is installed
+        run: |
+          set -euo pipefail
+          command -v go >/dev/null || {
+            echo "::error::setup-go reported success but Go is not on PATH -- the toolchain was not installed."
+            exit 1
+          }
+          go version
       - name: Test (${{ matrix.module }})
         working-directory: ${{ matrix.module }}
         run: go test -race -count=1 ./...
@@ -209,6 +287,7 @@ jobs:
           done
 
   vet:
+    needs: resolve-go
     runs-on: ${{ fromJSON(inputs.runner) }}
     env:
       GOWORK: "off"
@@ -219,15 +298,20 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: ${{ inputs.go_version }}
+          # The exact patch resolved once by resolve-go. Empty when the caller
+          # cleared go_version, and then go-version-file below applies per
+          # module -- the only path that still resolves per job.
+          go-version: ${{ needs.resolve-go.outputs.go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
           # go-version wins when both are set, so go-version-file only applies
-          # when a caller clears go_version to follow its own go.mod. Keep
-          # check-latest for that path: it installs the newest patch rather than
-          # whatever go1.MINOR.x a runner has cached, and under GOTOOLCHAIN=local
-          # a stale cache makes the build refuse to run, so a security patch bump
-          # would otherwise fail on some runners and not others.
-          check-latest: true
+          # when a caller clears go_version to follow its own go.mod. That path
+          # keeps check-latest, for the reason #11 added it: it installs the
+          # newest patch rather than whatever go1.MINOR.x a runner has cached,
+          # and under GOTOOLCHAIN=local a stale cache makes the build refuse to
+          # run, so a security patch bump would otherwise fail on some runners
+          # and not others. With go_version set, resolve-go already did that
+          # lookup once and this is a tool-cache hit with no network call.
+          check-latest: ${{ inputs.go_version == '' }}
           # Persistent self-hosted runner: Go's own module and build caches
           # already persist on disk between jobs, so setup-go's tar-based cache
           # is redundant -- its restore collides with the populated dirs ("tar:
@@ -236,11 +320,21 @@ jobs:
           # Go's on-disk caches are concurrency-safe, so only the redundant
           # actions layer is disabled.
           cache: false
+      # setup-go can report success having installed nothing (see resolve-go).
+      - name: Verify the Go toolchain is installed
+        run: |
+          set -euo pipefail
+          command -v go >/dev/null || {
+            echo "::error::setup-go reported success but Go is not on PATH -- the toolchain was not installed."
+            exit 1
+          }
+          go version
       - name: Vet (${{ matrix.module }})
         working-directory: ${{ matrix.module }}
         run: go vet ./...
 
   fmt:
+    needs: resolve-go
     runs-on: ${{ fromJSON(inputs.runner) }}
     env:
       GOWORK: "off"
@@ -251,15 +345,20 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: ${{ inputs.go_version }}
+          # The exact patch resolved once by resolve-go. Empty when the caller
+          # cleared go_version, and then go-version-file below applies per
+          # module -- the only path that still resolves per job.
+          go-version: ${{ needs.resolve-go.outputs.go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
           # go-version wins when both are set, so go-version-file only applies
-          # when a caller clears go_version to follow its own go.mod. Keep
-          # check-latest for that path: it installs the newest patch rather than
-          # whatever go1.MINOR.x a runner has cached, and under GOTOOLCHAIN=local
-          # a stale cache makes the build refuse to run, so a security patch bump
-          # would otherwise fail on some runners and not others.
-          check-latest: true
+          # when a caller clears go_version to follow its own go.mod. That path
+          # keeps check-latest, for the reason #11 added it: it installs the
+          # newest patch rather than whatever go1.MINOR.x a runner has cached,
+          # and under GOTOOLCHAIN=local a stale cache makes the build refuse to
+          # run, so a security patch bump would otherwise fail on some runners
+          # and not others. With go_version set, resolve-go already did that
+          # lookup once and this is a tool-cache hit with no network call.
+          check-latest: ${{ inputs.go_version == '' }}
           # Persistent self-hosted runner: Go's own module and build caches
           # already persist on disk between jobs, so setup-go's tar-based cache
           # is redundant -- its restore collides with the populated dirs ("tar:
@@ -268,6 +367,18 @@ jobs:
           # Go's on-disk caches are concurrency-safe, so only the redundant
           # actions layer is disabled.
           cache: false
+      # setup-go can report success having installed nothing (see resolve-go).
+      # This is the job where that bit hardest: gofmt vanishing turns into
+      # "xargs: gofmt: No such file or directory" and exit 127, which looks
+      # like a formatting failure rather than a missing toolchain.
+      - name: Verify the Go toolchain is installed
+        run: |
+          set -euo pipefail
+          command -v go >/dev/null || {
+            echo "::error::setup-go reported success but Go is not on PATH -- the toolchain was not installed."
+            exit 1
+          }
+          go version
       - name: Check formatting (${{ matrix.module }})
         working-directory: ${{ matrix.module }}
         run: |
@@ -284,6 +395,7 @@ jobs:
           fi
 
   lint:
+    needs: resolve-go
     runs-on: ${{ fromJSON(inputs.runner) }}
     env:
       GOWORK: "off"
@@ -294,15 +406,20 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: ${{ inputs.go_version }}
+          # The exact patch resolved once by resolve-go. Empty when the caller
+          # cleared go_version, and then go-version-file below applies per
+          # module -- the only path that still resolves per job.
+          go-version: ${{ needs.resolve-go.outputs.go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
           # go-version wins when both are set, so go-version-file only applies
-          # when a caller clears go_version to follow its own go.mod. Keep
-          # check-latest for that path: it installs the newest patch rather than
-          # whatever go1.MINOR.x a runner has cached, and under GOTOOLCHAIN=local
-          # a stale cache makes the build refuse to run, so a security patch bump
-          # would otherwise fail on some runners and not others.
-          check-latest: true
+          # when a caller clears go_version to follow its own go.mod. That path
+          # keeps check-latest, for the reason #11 added it: it installs the
+          # newest patch rather than whatever go1.MINOR.x a runner has cached,
+          # and under GOTOOLCHAIN=local a stale cache makes the build refuse to
+          # run, so a security patch bump would otherwise fail on some runners
+          # and not others. With go_version set, resolve-go already did that
+          # lookup once and this is a tool-cache hit with no network call.
+          check-latest: ${{ inputs.go_version == '' }}
           # Persistent self-hosted runner: Go's own module and build caches
           # already persist on disk between jobs, so setup-go's tar-based cache
           # is redundant -- its restore collides with the populated dirs ("tar:
@@ -311,6 +428,15 @@ jobs:
           # Go's on-disk caches are concurrency-safe, so only the redundant
           # actions layer is disabled.
           cache: false
+      # setup-go can report success having installed nothing (see resolve-go).
+      - name: Verify the Go toolchain is installed
+        run: |
+          set -euo pipefail
+          command -v go >/dev/null || {
+            echo "::error::setup-go reported success but Go is not on PATH -- the toolchain was not installed."
+            exit 1
+          }
+          go version
       - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         env:
           # Per-job analysis cache (step-level env: the runner context is not
@@ -344,6 +470,7 @@ jobs:
           skip-cache: true
 
   govulncheck:
+    needs: resolve-go
     if: ${{ inputs.run_govulncheck }}
     runs-on: ${{ fromJSON(inputs.runner) }}
     env:
@@ -355,12 +482,16 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: ${{ inputs.govulncheck_go_version }}
+          # The exact patch resolved once by resolve-go, from
+          # govulncheck_go_version rather than go_version: this job scans with
+          # the toolchain the repo SHIPS, which a caller may pin older.
+          go-version: ${{ needs.resolve-go.outputs.govulncheck_go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
           # See the build jobs above. Matters most here: scanning against a
           # stale cached toolchain would report stdlib vulnerabilities already
-          # fixed in the patch we actually ship.
-          check-latest: true
+          # fixed in the patch we actually ship. resolve-go did that lookup
+          # once; check-latest stays only for the per-module go.mod path.
+          check-latest: ${{ inputs.govulncheck_go_version == '' }}
           # Persistent self-hosted runner: Go's own module and build caches
           # already persist on disk between jobs, so setup-go's tar-based cache
           # is redundant -- its restore collides with the populated dirs ("tar:
@@ -369,6 +500,17 @@ jobs:
           # Go's on-disk caches are concurrency-safe, so only the redundant
           # actions layer is disabled.
           cache: false
+      # setup-go can report success having installed nothing (see resolve-go).
+      # Without this the next step dies as "go: command not found" while
+      # installing govulncheck, which reads as a tooling-download problem.
+      - name: Verify the Go toolchain is installed
+        run: |
+          set -euo pipefail
+          command -v go >/dev/null || {
+            echo "::error::setup-go reported success but Go is not on PATH -- the toolchain was not installed."
+            exit 1
+          }
+          go version
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Run govulncheck (${{ matrix.module }})
@@ -420,6 +562,7 @@ jobs:
   # Module-to-module replaces with a version (`replace a => b v1.2.3`) are not
   # filesystem paths and are left alone.
   replace-check:
+    needs: resolve-go
     runs-on: ${{ fromJSON(inputs.runner) }}
     env:
       GOWORK: "off"
@@ -431,10 +574,21 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: ${{ inputs.go_version }}
+          # The exact patch resolved once by resolve-go; empty when the caller
+          # cleared go_version, and then go-version-file applies per module.
+          go-version: ${{ needs.resolve-go.outputs.go_version }}
           go-version-file: ${{ matrix.module }}/go.mod
-          check-latest: true
+          check-latest: ${{ inputs.go_version == '' }}
           cache: false
+      # setup-go can report success having installed nothing (see resolve-go).
+      - name: Verify the Go toolchain is installed
+        run: |
+          set -euo pipefail
+          command -v go >/dev/null || {
+            echo "::error::setup-go reported success but Go is not on PATH -- the toolchain was not installed."
+            exit 1
+          }
+          go version
       - name: No external filesystem replace (${{ matrix.module }})
         working-directory: ${{ matrix.module }}
         run: |
