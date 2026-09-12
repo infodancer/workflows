@@ -97,6 +97,17 @@ jobs:
 | `modules` | no | `["."]` | module dirs as a JSON array string |
 | `go_version` | no | `stable` | Go for test/vet/fmt/lint; `""` falls back to each module's `go.mod`, or set an exact version to pin |
 | `govulncheck_go_version` | no | `stable` | Go for govulncheck only; scan with the toolchain you **ship** -- a repo pinning an older `FROM golang:` must match it here, or real stdlib vulns stay hidden |
+
+**How the toolchain is resolved:** a `resolve-go` job runs first and resolves
+`go_version` (and `govulncheck_go_version`) to an exact patch once per run;
+every matrix job then installs that exact version, which is a tool-cache hit
+with no network call. Previously each job resolved `stable` for itself, so a
+wide matrix made the same version-manifest lookup dozens of times -- and under
+that load `setup-go` was observed returning success **without installing Go**,
+leaving the job to fail several steps later with a bare exit 127. Each job now
+also asserts `go` is on `PATH` immediately after `setup-go`, so that failure is
+reported where it happens. Setting `go_version: ""` keeps per-job resolution,
+since modules may name different versions in their own `go.mod`.
 | `golangci_version` | no | `v2.10.1` | golangci-lint version |
 | `run_tests` | no | `true` | set false for service-backed repos that keep their own test job |
 | `run_govulncheck` | no | `true` | set false for repos that must scan in binary mode (e.g. testcontainers/moby) and keep their own govulncheck job |
