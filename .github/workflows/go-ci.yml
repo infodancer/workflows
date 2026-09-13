@@ -114,6 +114,26 @@ on:
         required: false
         type: string
         default: '["self-hosted", "linux", "ci"]'
+      test_postgres_env:
+        description: >-
+          Name of an environment variable through which to hand the test job a
+          throwaway PostgreSQL server, e.g. "WEB_TEST_PG". Empty (the default)
+          starts nothing. When set, each test matrix job starts its own server on
+          the runner's Docker, waits until it accepts TCP connections, and exports
+          its DSN under this name; the tests create their own databases on it
+          (infodancer/web's pgtest, memstore's testpg). This is not an Actions
+          service container -- those fail on the LXC runners. The server is
+          removed after the tests, and one left by a killed run is reaped.
+        required: false
+        type: string
+        default: ""
+      test_postgres_image:
+        description: >-
+          Image for the test_postgres_env server. A repo whose migrations need
+          extensions (PostGIS, pgvector) names an image that carries them.
+        required: false
+        type: string
+        default: postgres:17-alpine
 
 permissions:
   contents: read
@@ -248,9 +268,58 @@ jobs:
             exit 1
           }
           go version
+      - name: Start test PostgreSQL
+        if: ${{ inputs.test_postgres_env != '' }}
+        env:
+          PG_ENV: ${{ inputs.test_postgres_env }}
+          PG_IMAGE: ${{ inputs.test_postgres_image }}
+          # Unique per job: the runners on one host share a Docker daemon, so a
+          # fixed name would collide with a concurrent job's server.
+          PG_NAME: go-ci-pg-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+        run: |
+          set -euo pipefail
+          # The name is written into GITHUB_ENV, so hold it to a plain
+          # identifier: anything else could smuggle in further variables.
+          if ! [[ "$PG_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "::error::test_postgres_env must be a plain variable name, got: $PG_ENV"
+            exit 1
+          fi
+          password=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+          echo "::add-mask::$password"
+          # Loopback only, on a random host port: several jobs share a host, and
+          # nothing off the host has any business reaching a test server. No
+          # --rm, so a server that fails to start keeps its logs for the error.
+          docker run -d --name "$PG_NAME" \
+            --label org.infodancer.go-ci=test-postgres \
+            -e POSTGRES_USER=test -e POSTGRES_PASSWORD="$password" -e POSTGRES_DB=test \
+            -p 127.0.0.1::5432 "$PG_IMAGE" >/dev/null
+          echo "PG_CONTAINER=$PG_NAME" >> "$GITHUB_ENV"
+          port=$(docker port "$PG_NAME" 5432/tcp | head -n1 | sed 's/.*://')
+          # Probe over TCP. The image's init phase runs a temporary server on the
+          # Unix socket only, so a socket probe can pass before the real server
+          # is listening and the tests' first connection would be refused.
+          for _ in $(seq 1 60); do
+            if docker exec "$PG_NAME" pg_isready -h 127.0.0.1 -U test -d test >/dev/null 2>&1; then
+              echo "$PG_ENV=postgres://test:${password}@127.0.0.1:${port}/test?sslmode=disable" >> "$GITHUB_ENV"
+              echo "test PostgreSQL ready on 127.0.0.1:${port}, exported as ${PG_ENV}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::test PostgreSQL did not become ready within 60s"
+          docker logs "$PG_NAME" || true
+          exit 1
+
       - name: Test (${{ matrix.module }})
         working-directory: ${{ matrix.module }}
         run: go test -race -count=1 ./...
+
+      - name: Stop test PostgreSQL
+        if: ${{ always() && inputs.test_postgres_env != '' }}
+        run: |
+          if [ -n "${PG_CONTAINER:-}" ]; then
+            docker rm -f "$PG_CONTAINER" >/dev/null || true
+          fi
 
       # Reap testcontainers a killed, panicked, or timed-out run left behind.
       # With Ryuk disabled nothing else cleans these up on a persistent runner.
@@ -288,13 +357,16 @@ jobs:
       #
       # `docker ps` has no `until` filter (that is prune-only), hence the
       # explicit per-container timestamp comparison.
-      - name: Reap stale testcontainers
+      - name: Reap stale test containers
         if: always()
         env:
           REAP_MIN_AGE: 1 hour ago
         run: |
           cutoff=$(date -u -d "$REAP_MIN_AGE" +%s)
-          for id in $(docker ps -aq --filter label=org.testcontainers=true); do
+          # Test PostgreSQL servers are removed by the step above; one outlives
+          # its job only when the run was killed, and is reaped like the rest.
+          for id in $(docker ps -aq --filter label=org.testcontainers=true) \
+                    $(docker ps -aq --filter label=org.infodancer.go-ci=test-postgres); do
             created=$(docker inspect -f '{{.Created}}' "$id" 2>/dev/null) || continue
             ts=$(date -u -d "$created" +%s 2>/dev/null) || continue
             if [ "$ts" -lt "$cutoff" ]; then
