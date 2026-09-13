@@ -72,7 +72,9 @@ caller inherits one vetted set.
 The `test` job is the one with real per-repo variance (service containers,
 coverage, env). A reusable workflow can't take service containers as inputs, so
 a DB-backed repo sets `run_tests: false` and keeps its own `test.yml`, calling
-this for the static-analysis quartet only.
+this for the static-analysis quartet only. A repo whose tests just need a
+PostgreSQL server to create databases on can set `test_postgres_env` instead and
+keep the shared test job (see below).
 
 ```yaml
 # .github/workflows/ci.yml in the caller repo
@@ -116,6 +118,31 @@ since modules may name different versions in their own `go.mod`.
 | `check_go_consistency` | no | `false` | fail when the repo's `go.mod` files disagree on the `go` directive (see below) |
 | `go_version_doc` | no | `""` | path to a doc that must name the version the modules declare, e.g. `CONVENTIONS.md`; only consulted when `check_go_consistency` is true |
 | `runner` | no | `["self-hosted", "linux", "ci"]` | `runs-on` labels as a JSON array string; override to `["ubuntu-latest"]` for GitHub-hosted |
+| `test_postgres_env` | no | `""` | name of an env var to export a throwaway PostgreSQL DSN under for the test job, e.g. `WEB_TEST_PG`; empty starts nothing (see below) |
+| `test_postgres_image` | no | `postgres:17-alpine` | image for that server; name one carrying the extensions your migrations need |
+
+**Test PostgreSQL (`test_postgres_env`)** gives the test job a server to create
+databases on, for suites that take a DSN from the environment and make a private
+database per test (`infodancer/web`'s `pgtest`, memstore's `testpg`):
+
+```yaml
+    with:
+      test_postgres_env: WEB_TEST_PG
+```
+
+Each test matrix job starts its own server before the tests and removes it after
+them, pass or fail. It is not an Actions service container, because those fail
+on the LXC runners. The runners on a host share one Docker daemon, so the server
+is isolated per job: a name unique to the run, attempt and job; a port published
+on loopback only, chosen at random; and a random password, masked in the log.
+Readiness is probed over TCP rather than the socket, since the image's init phase
+runs a temporary socket-only server that a socket probe would mistake for the
+real one. A server left by a killed run carries the
+`org.infodancer.go-ci=test-postgres` label and is reaped with stale
+testcontainers.
+
+Without this, such a suite skips its database tests in CI -- green, and not
+testing the thing that most needs it.
 
 **Go version consistency (`check_go_consistency`)** asserts that every tracked
 `go.mod` declares the same `go` directive, and -- with `go_version_doc` -- that
