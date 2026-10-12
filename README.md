@@ -117,7 +117,7 @@ since modules may name different versions in their own `go.mod`.
 | `allow_local_replace` | no | `[]` | module paths (JSON array string) allowed to keep a filesystem `replace` pointing outside the repo; remove an entry once the dependency is tagged |
 | `check_go_consistency` | no | `false` | fail when the repo's `go.mod` files disagree on the `go` directive (see below) |
 | `go_version_doc` | no | `""` | path to a doc that must name the version the modules declare, e.g. `CONVENTIONS.md`; only consulted when `check_go_consistency` is true |
-| `runner` | no | `["self-hosted", "linux", "ci"]` | `runs-on` labels as a JSON array string; override to `["ubuntu-latest"]` for GitHub-hosted |
+| `runner` | no | `["ubuntu-latest"]` | `runs-on` labels as a JSON array string; override to e.g. `["self-hosted", "linux", "ci"]` for a caller's own pool |
 | `test_postgres_env` | no | `""` | name of an env var to export a throwaway PostgreSQL DSN under for the test job, e.g. `WEB_TEST_PG`; empty starts nothing (see below) |
 | `test_postgres_image` | no | `postgres:17-alpine` | image for that server; name one carrying the extensions your migrations need |
 
