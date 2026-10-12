@@ -107,13 +107,14 @@ on:
         default: ""
       runner:
         description: >-
-          runs-on labels, as a JSON array string. Defaults to the self-hosted CI
-          pool so callers do not consume GitHub-hosted minutes; override with
-          '["ubuntu-latest"]' for GitHub-hosted, or e.g. '["self-hosted","ci"]'
-          for a pool without the "linux" label.
+          runs-on labels, as a JSON array string. Defaults to GitHub-hosted
+          Ubuntu; override with e.g. '["self-hosted", "linux", "ci"]' to run
+          on a caller's own pool. Every job honours it, including the ones
+          that start Docker containers, which need a runner with a Docker
+          daemon either way.
         required: false
         type: string
-        default: '["self-hosted", "linux", "ci"]'
+        default: '["ubuntu-latest"]'
       test_postgres_env:
         description: >-
           Name of an environment variable through which to hand the test job a
