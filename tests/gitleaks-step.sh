@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Exercise the go-ci.yml gitleaks scan step against fixture repositories.
+# Exercise the gitleaks.yml scan step against fixture repositories.
 #
-# The script under test is pulled out of go-ci.yml at run time rather than
+# The script under test is pulled out of gitleaks.yml at run time rather than
 # copied here, so this tests the step callers actually run. Each case builds an
 # "origin" repo, clones it the way actions/checkout does with fetch-depth: 0
 # (other branches become remote-tracking refs), runs the step in the clone, and
@@ -14,17 +14,17 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-workflow="$here/../.github/workflows/go-ci.yml"
+workflow="$here/../.github/workflows/gitleaks.yml"
 step_name="Scan full history for secrets"
 
 extract_step() {
   if command -v yq >/dev/null 2>&1; then
-    yq -r ".jobs.gitleaks.steps[] | select(.name == \"$step_name\") | .run" "$workflow"
+    yq -r ".jobs.scan.steps[] | select(.name == \"$step_name\") | .run" "$workflow"
   else
     python3 - "$workflow" "$step_name" <<'PY'
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
-for s in wf["jobs"]["gitleaks"]["steps"]:
+for s in wf["jobs"]["scan"]["steps"]:
     if s.get("name") == sys.argv[2]:
         print(s["run"])
         break

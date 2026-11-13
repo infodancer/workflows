@@ -170,8 +170,9 @@ number was a manual step nothing enforced. The doc half is a substring match
 rather than an exact check, so a changelog citing older versions still passes --
 the claim enforced is that the current version appears at all.
 
-**Secret scanning (`run_gitleaks`)** runs gitleaks over the repo's full git
-history -- every commit on every branch, not just the change under test. A
+**Secret scanning (`run_gitleaks`)** calls [`gitleaks.yml`](#gitleaksyml),
+which runs gitleaks over the repo's full git history -- every commit on every
+branch, not just the change under test. A
 secret committed and later deleted is still in the history and still exposed to
 anyone who clones the repo, so a diff-only scan would miss exactly the case that
 matters. Findings are redacted in the job log. The job fails (exit 1) on
@@ -210,3 +211,34 @@ repo's own CI (`tests/gitleaks-step.sh`).
 `test` to `ci / test` (caller-job `/` reusable-job). If the repo has branch
 protection requiring the old names, update the required-check contexts in the
 same change.
+
+### `gitleaks.yml`
+
+The secret scan on its own, for repos with no Go CI (Hugo sites, docs,
+infra-as-code). `go-ci.yml` calls the same workflow, so every repo runs one
+definition. Behaviour, exit codes, and false-positive handling are described
+under `run_gitleaks` above.
+
+```yaml
+# .github/workflows/secrets.yml in the caller repo
+name: Secret scan
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    uses: infodancer/workflows/.github/workflows/gitleaks.yml@v0
+```
+
+| input | required | default | notes |
+|---|---|---|---|
+| `gitleaks_version` | no | `v8.30.1` | exact gitleaks module version, installed with `go install`; `go-ci.yml`'s default must match (enforced by this repo's lint) |
+| `runner` | no | `["ubuntu-latest"]` | `runs-on` labels as a JSON array string |
+
+Don't add it to a repo that already calls `go-ci.yml`: the scan runs there
+through `run_gitleaks`, and a second job would only scan the same history twice.

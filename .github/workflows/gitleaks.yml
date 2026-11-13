@@ -1,0 +1,118 @@
+name: Secret scan (reusable)
+
+# Committed secrets, across the whole history and every branch.
+#
+# Full history rather than just the commits in a push or PR: a secret that
+# was committed and then deleted is still in the repo and still exposed to
+# anyone who clones it, and a diff-only scan never sees a force-pushed branch
+# or a commit that arrived some other way. These repos are small enough that
+# the full scan takes seconds.
+#
+# Called by go-ci.yml (run_gitleaks), and directly by repos with no Go CI:
+#
+#   jobs:
+#     secrets:
+#       uses: infodancer/workflows/.github/workflows/gitleaks.yml@v0
+#
+# Callers tune it with the standard gitleaks files at the repo root, which
+# gitleaks reads on its own: .gitleaks.toml (rules and path allowlists --
+# `[extend] useDefault = true` keeps the stock rules) and .gitleaksignore
+# (fingerprints of individual reviewed findings).
+#
+# Not gitleaks/gitleaks-action: it needs a paid license key for repos owned
+# by an organization, and most callers are.
+
+on:
+  workflow_call:
+    inputs:
+      gitleaks_version:
+        description: >-
+          gitleaks release to install, as an exact module version (vX.Y.Z).
+          Installed with `go install`, so the module checksum database vouches
+          for the source.
+        required: false
+        type: string
+        default: v8.30.1
+      runner:
+        description: >-
+          runs-on labels, as a JSON array string. Defaults to GitHub-hosted
+          Ubuntu.
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: gitleaks
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Every commit on every branch; the scan step refuses a shallow clone.
+          fetch-depth: 0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          # Only builds the scanner, so any current Go will do.
+          go-version: stable
+          check-latest: true
+          cache: false
+      # setup-go has been seen to report success having installed nothing
+      # (see resolve-go in go-ci.yml); fail here rather than at `go install`.
+      - name: Verify the Go toolchain is installed
+        run: |
+          set -euo pipefail
+          command -v go >/dev/null || {
+            echo "::error::setup-go reported success but Go is not on PATH -- the toolchain was not installed."
+            exit 1
+          }
+          go version
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: ${{ inputs.gitleaks_version }}
+        run: |
+          set -euo pipefail
+          # An exact version only: "latest" or a branch would let the scanner
+          # change under every caller with no tag moving here.
+          if ! printf '%s' "$GITLEAKS_VERSION" | grep -qxE 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::gitleaks_version must be an exact version like v8.30.1, got '${GITLEAKS_VERSION}'."
+            exit 1
+          fi
+          go install "github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # tests/gitleaks-step.sh runs this script against fixture repositories;
+      # keep the step name in sync with it.
+      - name: Scan full history for secrets
+        run: |
+          set -euo pipefail
+
+          # A shallow clone would scan a fraction of the history and pass.
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            echo "::error::Shallow clone: the secret scan needs the full history (checkout fetch-depth: 0)."
+            exit 1
+          fi
+
+          # --redact keeps the secret itself out of the public job log; the
+          # finding still names the file, line, commit, and rule.
+          #
+          # Findings get their own exit code (3) because gitleaks exits 1 on
+          # its own errors -- a malformed .gitleaks.toml among them -- and
+          # telling a caller to rotate secrets over a typo in a config file
+          # sends them the wrong way. The step exits 1 for findings and 2 for
+          # a scanner error.
+          rc=0
+          gitleaks git --redact --no-banner --verbose --exit-code 3 . || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "secret scan passed"
+            exit 0
+          fi
+          if [ "$rc" -ne 3 ]; then
+            echo "::error::gitleaks failed to run (exit ${rc}); no scan result. Check .gitleaks.toml and .gitleaksignore if the repo has them."
+            exit 2
+          fi
+          echo "::error::gitleaks found potential secrets in the git history (above, redacted)."
+          echo "::error::A real secret is exposed to everyone who can read this repo, from the commit that added it, even if a later commit deleted it: revoke and rotate it first, then remove it from history."
+          echo "::error::A false positive: allowlist the path in .gitleaks.toml (with [extend] useDefault = true) or add the finding's fingerprint to .gitleaksignore."
+          exit 1

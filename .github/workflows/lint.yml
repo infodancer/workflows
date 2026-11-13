@@ -24,7 +24,7 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@latest
           "$(go env GOPATH)/bin/actionlint" -color
 
-  # Run the go-ci gitleaks scan step against fixture repositories, so a change
+  # Run the gitleaks.yml scan step against fixture repositories, so a change
   # that stops it catching a secret (or starts failing clean repos) is caught
   # here rather than in every caller at once.
   gitleaks-step:
@@ -34,11 +34,23 @@ jobs:
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version: stable
-      - name: Install gitleaks at go-ci's default version
+      - name: gitleaks_version defaults agree
         run: |
           set -euo pipefail
-          # The version callers get, read from go-ci.yml so the two never drift.
-          v=$(yq -r '.on.workflow_call.inputs.gitleaks_version.default' .github/workflows/go-ci.yml)
+          # go-ci.yml passes its own gitleaks_version through to gitleaks.yml,
+          # so its default is what Go callers get. The two must match or the
+          # scanner version depends on which entry point a repo uses.
+          a=$(yq -r '.on.workflow_call.inputs.gitleaks_version.default' .github/workflows/gitleaks.yml)
+          b=$(yq -r '.on.workflow_call.inputs.gitleaks_version.default' .github/workflows/go-ci.yml)
+          if [ "$a" != "$b" ]; then
+            echo "::error::gitleaks_version default is ${a} in gitleaks.yml but ${b} in go-ci.yml; bump both together."
+            exit 1
+          fi
+          echo "both default to ${a}"
+      - name: Install gitleaks at the default version
+        run: |
+          set -euo pipefail
+          v=$(yq -r '.on.workflow_call.inputs.gitleaks_version.default' .github/workflows/gitleaks.yml)
           go install "github.com/zricethezav/gitleaks/v8@${v}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Test the scan step
