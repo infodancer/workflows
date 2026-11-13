@@ -99,6 +99,16 @@ jobs:
 | `modules` | no | `["."]` | module dirs as a JSON array string |
 | `go_version` | no | `stable` | Go for test/vet/fmt/lint; `""` falls back to each module's `go.mod`, or set an exact version to pin |
 | `govulncheck_go_version` | no | `stable` | Go for govulncheck only; scan with the toolchain you **ship** -- a repo pinning an older `FROM golang:` must match it here, or real stdlib vulns stay hidden |
+| `golangci_version` | no | `v2.14.0` | golangci-lint version |
+| `run_tests` | no | `true` | set false for service-backed repos that keep their own test job |
+| `run_govulncheck` | no | `true` | set false for repos that must scan in binary mode (e.g. testcontainers/moby) and keep their own govulncheck job |
+| `govulncheck_allow` | no | `[]` | OSV IDs (JSON array string) to report but not gate on; findings still print as warnings |
+| `allow_local_replace` | no | `[]` | module paths (JSON array string) allowed to keep a filesystem `replace` pointing outside the repo; remove an entry once the dependency is tagged |
+| `check_go_consistency` | no | `false` | fail when the repo's `go.mod` files disagree on the `go` directive (see below) |
+| `go_version_doc` | no | `""` | path to a doc that must name the version the modules declare, e.g. `CONVENTIONS.md`; only consulted when `check_go_consistency` is true |
+| `runner` | no | `["ubuntu-latest"]` | `runs-on` labels as a JSON array string; override to e.g. `["self-hosted", "linux", "ci"]` for a caller's own pool |
+| `test_postgres_env` | no | `""` | name of an env var to export a throwaway PostgreSQL DSN under for the test job, e.g. `WEB_TEST_PG`; empty starts nothing (see below) |
+| `test_postgres_image` | no | `postgres:17-alpine` | image for that server; name one carrying the extensions your migrations need |
 
 **How the toolchain is resolved:** a `resolve-go` job runs first and resolves
 `go_version` (and `govulncheck_go_version`) to an exact patch once per run;
@@ -110,16 +120,6 @@ leaving the job to fail several steps later with a bare exit 127. Each job now
 also asserts `go` is on `PATH` immediately after `setup-go`, so that failure is
 reported where it happens. Setting `go_version: ""` keeps per-job resolution,
 since modules may name different versions in their own `go.mod`.
-| `golangci_version` | no | `v2.10.1` | golangci-lint version |
-| `run_tests` | no | `true` | set false for service-backed repos that keep their own test job |
-| `run_govulncheck` | no | `true` | set false for repos that must scan in binary mode (e.g. testcontainers/moby) and keep their own govulncheck job |
-| `govulncheck_allow` | no | `[]` | OSV IDs (JSON array string) to report but not gate on; findings still print as warnings |
-| `allow_local_replace` | no | `[]` | module paths (JSON array string) allowed to keep a filesystem `replace` pointing outside the repo; remove an entry once the dependency is tagged |
-| `check_go_consistency` | no | `false` | fail when the repo's `go.mod` files disagree on the `go` directive (see below) |
-| `go_version_doc` | no | `""` | path to a doc that must name the version the modules declare, e.g. `CONVENTIONS.md`; only consulted when `check_go_consistency` is true |
-| `runner` | no | `["ubuntu-latest"]` | `runs-on` labels as a JSON array string; override to e.g. `["self-hosted", "linux", "ci"]` for a caller's own pool |
-| `test_postgres_env` | no | `""` | name of an env var to export a throwaway PostgreSQL DSN under for the test job, e.g. `WEB_TEST_PG`; empty starts nothing (see below) |
-| `test_postgres_image` | no | `postgres:17-alpine` | image for that server; name one carrying the extensions your migrations need |
 
 **Test PostgreSQL (`test_postgres_env`)** gives the test job a server to create
 databases on, for suites that take a DSN from the environment and make a private
