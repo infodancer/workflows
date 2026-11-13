@@ -172,10 +172,9 @@ the claim enforced is that the current version appears at all.
 
 **Secret scanning (`run_gitleaks`)** calls [`gitleaks.yml`](#gitleaksyml),
 which runs gitleaks over the repo's full git history -- every commit on every
-branch, not just the change under test. A
-secret committed and later deleted is still in the history and still exposed to
-anyone who clones the repo, so a diff-only scan would miss exactly the case that
-matters. Findings are redacted in the job log. The job fails (exit 1) on
+branch, not just the change under test. A secret committed and later deleted
+is still in the history and still exposed to anyone who clones the repo, so a
+diff-only scan would miss exactly the case that matters. Findings are redacted in the job log. The job fails (exit 1) on
 findings and reports a scanner error, such as a malformed config, separately
 (exit 2) so a typo is not mistaken for a leak.
 
