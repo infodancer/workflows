@@ -1,6 +1,7 @@
 name: Go CI (reusable)
 
-# Shared Go CI: test + vet + fmt + lint + govulncheck, factored out of the
+# Shared Go CI: test + vet + fmt + lint + govulncheck (plus a repo-wide
+# gitleaks secret scan), factored out of the
 # near-identical per-repo copies. Every job fans out over a module matrix
 # (default a single root module) with GOWORK=off, so a repo's local go.work is
 # ignored and each module builds against its own go.mod -- matching how the
@@ -78,6 +79,23 @@ on:
         required: false
         type: string
         default: '[]'
+      run_gitleaks:
+        description: >-
+          Scan the repository's full git history for committed secrets with
+          gitleaks. On by default. A repo with false positives (vendored code,
+          test fixtures) keeps the scan and suppresses them in its own
+          .gitleaks.toml or .gitleaksignore rather than switching it off.
+        required: false
+        type: boolean
+        default: true
+      gitleaks_version:
+        description: >-
+          gitleaks release to install, as an exact module version (vX.Y.Z);
+          passed through to gitleaks.yml. Keep this default equal to
+          gitleaks.yml's -- the lint workflow fails if they differ.
+        required: false
+        type: string
+        default: v8.30.1
       allow_local_replace:
         description: >-
           Module paths (JSON array string, e.g. '["github.com/acme/thing"]')
@@ -728,6 +746,18 @@ jobs:
             echo "replace check passed"
           fi
           exit $status
+
+  # Committed secrets, across the whole history and every branch. The scan
+  # itself lives in gitleaks.yml, so repos without Go CI can call it directly
+  # and both paths run one definition. The local `./` form resolves from this
+  # repository at this workflow's own commit, so a caller pinned to an exact
+  # tag gets the matching scanner, not whatever v0 points at.
+  gitleaks:
+    if: ${{ inputs.run_gitleaks }}
+    uses: ./.github/workflows/gitleaks.yml
+    with:
+      gitleaks_version: ${{ inputs.gitleaks_version }}
+      runner: ${{ inputs.runner }}
 
   # One Go version across the repo, and docs that say the same number.
   #
