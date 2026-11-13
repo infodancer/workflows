@@ -66,7 +66,7 @@ jobs:
 ### `go-ci.yml`
 
 Go CI: `test` + `vet` + `fmt` + `lint` + `govulncheck`, each fanning out over a
-module matrix with `GOWORK=off`. Action versions are SHA-pinned here so every
+module matrix with `GOWORK=off`, plus a repo-wide `gitleaks` secret scan. Action versions are SHA-pinned here so every
 caller inherits one vetted set.
 
 The `test` job is the one with real per-repo variance (service containers,
@@ -103,6 +103,8 @@ jobs:
 | `run_tests` | no | `true` | set false for service-backed repos that keep their own test job |
 | `run_govulncheck` | no | `true` | set false for repos that must scan in binary mode (e.g. testcontainers/moby) and keep their own govulncheck job |
 | `govulncheck_allow` | no | `[]` | OSV IDs (JSON array string) to report but not gate on; findings still print as warnings |
+| `run_gitleaks` | no | `true` | scan the full git history for committed secrets (see below); suppress false positives in the repo's own `.gitleaks.toml` / `.gitleaksignore` rather than turning this off |
+| `gitleaks_version` | no | `v8.30.1` | exact gitleaks module version, installed with `go install` |
 | `allow_local_replace` | no | `[]` | module paths (JSON array string) allowed to keep a filesystem `replace` pointing outside the repo; remove an entry once the dependency is tagged |
 | `check_go_consistency` | no | `false` | fail when the repo's `go.mod` files disagree on the `go` directive (see below) |
 | `go_version_doc` | no | `""` | path to a doc that must name the version the modules declare, e.g. `CONVENTIONS.md`; only consulted when `check_go_consistency` is true |
@@ -167,6 +169,42 @@ module was not in the matrix nothing reported it for weeks. Separately,
 number was a manual step nothing enforced. The doc half is a substring match
 rather than an exact check, so a changelog citing older versions still passes --
 the claim enforced is that the current version appears at all.
+
+**Secret scanning (`run_gitleaks`)** runs gitleaks over the repo's full git
+history -- every commit on every branch, not just the change under test. A
+secret committed and later deleted is still in the history and still exposed to
+anyone who clones the repo, so a diff-only scan would miss exactly the case that
+matters. Findings are redacted in the job log. The job fails (exit 1) on
+findings and reports a scanner error, such as a malformed config, separately
+(exit 2) so a typo is not mistaken for a leak.
+
+On a **real finding**, revoke and rotate the secret first; removing it from
+history comes second and does not undo the exposure.
+
+**False positives** are suppressed in the caller repo with the standard gitleaks
+files at its root, which gitleaks picks up on its own. Vendored
+`modernc.org/sqlite` is the common one -- its transpiled C trips
+`generic-api-key` dozens of times, and again on every re-vendor -- so a path
+allowlist suits it better than fingerprints:
+
+```toml
+# .gitleaks.toml
+[extend]
+useDefault = true  # keep the stock rules; without this the file replaces them
+
+[[allowlists]]
+description = "vendored modernc.org/sqlite: transpiled C constants"
+paths = ['^(.*/)?vendor/modernc\.org/sqlite/lib/']
+```
+
+For a one-off reviewed finding (a test fixture, a username a rule mistakes for
+a secret), add its `Fingerprint` from the job log to `.gitleaksignore` instead,
+so the rest of the file stays covered.
+
+The scanner is installed with `go install` at an exact version rather than via
+`gitleaks/gitleaks-action`, which needs a paid license key for repos owned by
+an organization. The step itself is tested against fixture repositories in this
+repo's own CI (`tests/gitleaks-step.sh`).
 
 **Migration note:** moving a repo to this reusable renames its PR checks from
 `test` to `ci / test` (caller-job `/` reusable-job). If the repo has branch
