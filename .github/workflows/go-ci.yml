@@ -749,12 +749,16 @@ jobs:
 
   # Committed secrets, across the whole history and every branch. The scan
   # itself lives in gitleaks.yml, so repos without Go CI can call it directly
-  # and both paths run one definition. The local `./` form resolves from this
-  # repository at this workflow's own commit, so a caller pinned to an exact
-  # tag gets the matching scanner, not whatever v0 points at.
+  # and both paths run one definition. This is a full owner/repo reference, not
+  # the local `./` form: a `./` nested call in a workflow that other
+  # repositories consume makes every push-triggered caller run fail at parse
+  # time with "workflow file issue" and no jobs (pull_request runs still pass,
+  # which hides it). The cost is that the scanner tracks @v0 rather than the
+  # exact tag a caller pinned go-ci.yml to; lint.yml rejects `./` here so it
+  # cannot creep back.
   gitleaks:
     if: ${{ inputs.run_gitleaks }}
-    uses: ./.github/workflows/gitleaks.yml
+    uses: infodancer/workflows/.github/workflows/gitleaks.yml@v0
     with:
       gitleaks_version: ${{ inputs.gitleaks_version }}
       runner: ${{ inputs.runner }}

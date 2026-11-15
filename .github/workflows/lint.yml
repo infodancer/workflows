@@ -24,6 +24,22 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@latest
           "$(go env GOPATH)/bin/actionlint" -color
 
+  # Reusable workflows here are called from other repositories. A nested
+  # `uses: ./...` call inside one breaks push-triggered callers at parse time
+  # (zero jobs, "workflow file issue") while pull_request runs stay green, so
+  # nothing else in this repo's checks would notice.
+  no-local-nested-calls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Reject local-path nested workflow calls
+        run: |
+          set -euo pipefail
+          if grep -nE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*\./' .github/workflows/*.yml; then
+            echo "::error::Nested workflow calls must use infodancer/workflows/.github/workflows/<file>@v0, not a ./ path; ./ breaks push-triggered callers."
+            exit 1
+          fi
+
   # Run the gitleaks.yml scan step against fixture repositories, so a change
   # that stops it catching a secret (or starts failing clean repos) is caught
   # here rather than in every caller at once.
